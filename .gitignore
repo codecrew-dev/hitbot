@@ -1,2 +1,18 @@
 /.env
-/ph�@XSs@8@
+
+# Node.js
+/node_modules
+/dist
+/.build
+
+# Logs
+*.log
+npm-debug.log*
+
+# IDE
+/.idea
+/.vscode
+
+# OS generated files
+.DS_Store
+Thumbs.db" > .gitignore

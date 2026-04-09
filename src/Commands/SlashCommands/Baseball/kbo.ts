@@ -1793,19 +1793,16 @@ async function showLiveGameInfo(interaction: ChatInputCommandInteraction, gameId
             // 이미 진행 중인 중계가 있는지 확인 (수정된 부분)
             if (isUserReceivingLiveRelay(buttonInteraction.user.id)) {
                 await buttonInteraction.reply({
-                    content: "❌ **이미 실시간 중계를 받고 계십니다.**\n다른 실시간 중계를 시작하려면 먼저 진행 중인 중계를 종료해주세요.",
+                    content: "❌ **이미 실시간 중계를 받고 계십니다.**\n현재 중계를 종료하려면 `/kbo dm중계 경기id:종료종료` 명령어를 사용해주세요.",
                     ephemeral: true
                 });
                 return;
             }
             
-            await buttonInteraction.reply({
-                content: '✅ DM으로 실시간 중계를 시작합니다. DM을 확인해주세요.',
-                ephemeral: true
-            });
+            await buttonInteraction.deferReply({ ephemeral: true });
             
             // DM 중계 시작
-            await startDmLiveRelay(buttonInteraction as unknown as ChatInputCommandInteraction, gameId);
+            await startDmLiveRelay(buttonInteraction as any, gameId);
         }
     });
     
@@ -1824,7 +1821,7 @@ async function showLiveGameInfo(interaction: ChatInputCommandInteraction, gameId
 }
 
 // DM 실시간 중계를 시작하는 함수
-async function startDmLiveRelay(interaction: ChatInputCommandInteraction, gameId: string) {
+async function startDmLiveRelay(interaction: any, gameId: string) {
     try {
         // 경기 기본 정보 가져오기
         const today = new Date();
@@ -2368,30 +2365,18 @@ KboNotificationService.getInstance = function(client: Client) {
                     });
                 } else if (buttonInteraction.customId === `dmrelay_${gameInfo.gameId}`) {
                     // 이미 진행 중인 DM 중계가 있는지 확인
-                    if (activeDmRelay.has(buttonInteraction.user.id)) {
+                    if (isUserReceivingLiveRelay(buttonInteraction.user.id)) {
                         await buttonInteraction.reply({
-                            content: '이미 진행 중인 DM 중계가 있습니다. 중지 후 다시 시도해주세요.',
+                            content: "❌ **이미 실시간 중계를 받고 계십니다.**\n현재 중계를 종료하려면 `/kbo dm중계 경기id:종료종료` 명령어를 사용해주세요.",
                             ephemeral: true
                         });
                         return;
                     }
                     
-                    await buttonInteraction.reply({
-                        content: '✅ DM으로 실시간 중계를 시작합니다.',
-                        ephemeral: true
-                    });
+                    await buttonInteraction.deferReply({ ephemeral: true });
                     
-                    // DM 중계 시작 - 가상의 CommandInteraction 객체 생성
-                    const fakeInteraction = {
-                        user: buttonInteraction.user,
-                        client: client,
-                        deferred: true,
-                        replied: true,
-                        editReply: async () => {},
-                        reply: async () => {}
-                    } as unknown as ChatInputCommandInteraction;
-                    
-                    await startDmLiveRelay(fakeInteraction, gameInfo.gameId);
+                    // DM 중계 시작
+                    await startDmLiveRelay(buttonInteraction as any, gameInfo.gameId);
                 } else if (buttonInteraction.customId === `refresh_${gameInfo.gameId}`) {
                     await buttonInteraction.deferUpdate();
                     

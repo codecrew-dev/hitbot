@@ -166,7 +166,10 @@ export default {
                         .addChoices(
                             { name: "팀 순위", value: "team" },
                             { name: "투수 순위", value: "pitcher" },
-                            { name: "타자 순위", value: "batter" }
+                            { name: "타자 순위", value: "batter" },
+                            { name: "시범경기 팀 순위", value: "pre_team" },
+                            { name: "시범경기 투수 순위", value: "pre_pitcher" },
+                            { name: "시범경기 타자 순위", value: "pre_batter" }
                         )
                 )
                 .addIntegerOption(option =>
@@ -518,7 +521,7 @@ export default {
                 const targetYear = yearOption || currentYear;
                 
                 // 순위 가져오기
-                const standings = await getKBOStandings(targetYear, typeOption as "team" | "pitcher" | "batter");
+                const standings = await getKBOStandings(targetYear, typeOption as string);
                 
                 if (!standings || standings.length === 0) {
                     return interaction.editReply(`${targetYear}년 KBO ${getTypeDisplayName(typeOption)} 정보를 불러올 수 없습니다.`);
@@ -533,7 +536,7 @@ export default {
                     .setThumbnail("https://6ptotvmi5753.edge.naverncp.com/KBO_IMAGE/KBOHome/resources/images/common/h2_logo.png");
                 
                 // 유형에 따른 필드 표시
-                if (typeOption === "team") {
+                if (typeOption === "team" || typeOption === "pre_team") {
                     // 팀 순위 표시
                     standings.forEach((team: any) => {
                         embed.addFields({
@@ -544,7 +547,7 @@ export default {
                             inline: false
                         });
                     });
-                } else if (typeOption === "pitcher") {
+                } else if (typeOption === "pitcher" || typeOption === "pre_pitcher") {
                     // 투수 순위 표시 - 10위까지만
                     embed.setTitle(`⚾ KBO ${getTypeDisplayName(typeOption)} TOP 10 (${targetYear}년)`);
                     standings.slice(0, 10).forEach((pitcher: any) => {
@@ -556,7 +559,7 @@ export default {
                             inline: false
                         });
                     });
-                } else if (typeOption === "batter") {
+                } else if (typeOption === "batter" || typeOption === "pre_batter") {
                     // 타자 순위 표시 - 10위까지만
                     embed.setTitle(`⚾ KBO ${getTypeDisplayName(typeOption)} TOP 10 (${targetYear}년)`);
                     standings.slice(0, 10).forEach((batter: any) => {
@@ -1340,6 +1343,9 @@ function getTypeDisplayName(type: string | null) {
         case "team": return "팀 순위";
         case "pitcher": return "투수 순위";
         case "batter": return "타자 순위";
+        case "pre_team": return "시범경기 팀 순위";
+        case "pre_pitcher": return "시범경기 투수 순위";
+        case "pre_batter": return "시범경기 타자 순위";
         default: return "팀 순위";
     }
 }
@@ -1380,24 +1386,26 @@ function getTeamDisplayName(teamCode: string) {
 }
 
 // KBO 순위 가져오는 함수 (API 기반)
-async function getKBOStandings(year = new Date().getFullYear(), type: "team" | "pitcher" | "batter" = "team") {
-    if (type === "team") {
-        // 팀 순위는 API 사용
-        return await getKBOTeamStandingsFromAPI(year);
-    } else if (type === "pitcher") {
-        // 투수 순위는 API 사용
-        return await getKBOPitchersFromAPI(year);
-    } else if (type === "batter") {
-        // 타자 순위는 API 사용
-        return await getKBOBattersFromAPI(year);
-    }
+async function getKBOStandings(year = new Date().getFullYear(), type: string = "team") {
+    const isPreseason = type.startsWith("pre_");
+    const actualType = type.replace("pre_", "");
     
+    if (actualType === "team") {
+        return await getKBOTeamStandingsFromAPI(year, isPreseason);
+    } else if (actualType === "pitcher") {
+        return await getKBOPitchersFromAPI(year, isPreseason);
+    } else if (actualType === "batter") {
+        return await getKBOBattersFromAPI(year, isPreseason);
+    }
     return [];
 }
 
 // 네이버 스포츠 KBO 팀 순위 API에서 데이터 가져오기
-async function getKBOTeamStandingsFromAPI(year = new Date().getFullYear()) {
-    const url = `https://api-gw.sports.naver.com/statistics/categories/kbo/seasons/${year}/teams`;
+async function getKBOTeamStandingsFromAPI(year = new Date().getFullYear(), isPreseason: boolean = false) {
+    let url = `https://api-gw.sports.naver.com/statistics/categories/kbo/seasons/${year}/teams`;
+    if (isPreseason) {
+        url += `?gameType=PRESEASON`;
+    }
     
     try {
         console.log(`KBO 팀 순위 API 호출: ${url}`);
@@ -1441,8 +1449,11 @@ async function getKBOTeamStandingsFromAPI(year = new Date().getFullYear()) {
 }
 
 // 네이버 스포츠 KBO 투수 순위 API에서 데이터 가져오기
-async function getKBOPitchersFromAPI(year = new Date().getFullYear()) {
-    const url = `https://api-gw.sports.naver.com/statistics/categories/kbo/seasons/${year}/players?sortField=pitcherEra&sortDirection=asc&playerType=PITCHER`;
+async function getKBOPitchersFromAPI(year = new Date().getFullYear(), isPreseason: boolean = false) {
+    let url = `https://api-gw.sports.naver.com/statistics/categories/kbo/seasons/${year}/players?sortField=pitcherEra&sortDirection=asc&playerType=PITCHER`;
+    if (isPreseason) {
+        url += `&gameType=PRESEASON`;
+    }
     
     try {
         console.log(`KBO 투수 순위 API 호출: ${url}`);
@@ -1494,8 +1505,11 @@ async function getKBOPitchersFromAPI(year = new Date().getFullYear()) {
 }
 
 // 네이버 스포츠 KBO 타자 순위 API에서 데이터 가져오기
-async function getKBOBattersFromAPI(year = new Date().getFullYear()) {
-    const url = `https://api-gw.sports.naver.com/statistics/categories/kbo/seasons/${year}/players?sortField=hitterHra&sortDirection=desc&playerType=HITTER`;
+async function getKBOBattersFromAPI(year = new Date().getFullYear(), isPreseason: boolean = false) {
+    let url = `https://api-gw.sports.naver.com/statistics/categories/kbo/seasons/${year}/players?sortField=hitterHra&sortDirection=desc&playerType=HITTER`;
+    if (isPreseason) {
+        url += `&gameType=PRESEASON`;
+    }
     
     try {
         console.log(`KBO 타자 순위 API 호출: ${url}`);

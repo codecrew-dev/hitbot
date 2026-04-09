@@ -2,11 +2,11 @@ import { EmbedBuilder, SlashCommandBuilder, ChatInputCommandInteraction, Client,
 import { SlashCommand } from "../../../types";
 import axios from "axios";
 import os from "os";
-import puppeteer from "puppeteer";
 import * as fs from 'fs';
 import * as path from 'path';
 import * as MongoDB from '../../../utils/Mongodb'
 import { KboNotificationService } from "../../../services/notificationService";
+import { log } from "console";
 
 // 뉴스 아이템 인터페이스 정의
 interface NewsItem {
@@ -61,13 +61,18 @@ interface VideoApiResponse {
 
 // 활성 DM 중계를 추적하기 위한 맵
 // 키: 사용자 ID, 값: {gameId, intervalId, lastStateHash, messageId}
-const activeDmRelay = new Map<string, {
+export const activeDmRelay = new Map<string, {
     gameId: string;
     intervalId: NodeJS.Timeout;
     lastStateHash: string; // 마지막 상태의 해시 (변경 사항 감지용)
     messageId: string | null; // 마지막으로 보낸 메시지 ID
     isGameEnded: boolean; // 경기 종료 여부 추가
 }>();
+
+// activeDmRelay 맵에 접근하기 위한 getter 함수
+export function getActiveDmRelay() {
+    return activeDmRelay;
+}
 
 // 사용자가 이미 실시간 중계를 받고 있는지 확인하는 함수
 function isUserReceivingLiveRelay(userId: string): boolean {
@@ -1314,15 +1319,11 @@ export default {
                         return interaction.editReply(`${getTeamDisplayName(existingUser.teamName)}의 오늘 예정된 경기가 없습니다.`);
                     }
                     
-                    // 발견된 경기의 ID로 실시간 중계 정보 조회
+                    // 발견된 경기의 ID로 DM 실시간 중계 정보 시작
                     const todayGameId = teamGame.gameId;
-                    if (!todayGameId) {
-                        return interaction.editReply(`${getTeamDisplayName(existingUser.teamName)}의 오늘 경기가 있지만, 경기 ID를 찾을 수 없습니다.`);
-                    }
-                    
                     console.log(`팀 ${existingUser.teamName}의 오늘 경기 ID: ${todayGameId}로 DM 실시간 중계 시작`);
                     
-                    // DM 실시간 중계 정보 시작
+                    // DM 실시간 중계 시작
                     await startDmLiveRelay(interaction, todayGameId);
                 }
             } catch (error) {
@@ -1378,286 +1379,229 @@ function getTeamDisplayName(teamCode: string) {
     return teamMap[teamCode] || teamCode;
 }
 
-// KBO 순위 가져오는 함수 (수정)
+// KBO 순위 가져오는 함수 (API 기반)
 async function getKBOStandings(year = new Date().getFullYear(), type: "team" | "pitcher" | "batter" = "team") {
-    let url = `https://sports.news.naver.com/kbaseball/record/index?category=kbo&year=${year}`;
-    
-    if (type !== "team") {
-        url += `&type=${type}`;
+    if (type === "team") {
+        // 팀 순위는 API 사용
+        return await getKBOTeamStandingsFromAPI(year);
+    } else if (type === "pitcher") {
+        // 투수 순위는 API 사용
+        return await getKBOPitchersFromAPI(year);
+    } else if (type === "batter") {
+        // 타자 순위는 API 사용
+        return await getKBOBattersFromAPI(year);
     }
-
-    // Puppeteer 실행
-    const browser = await puppeteer.launch({ 
-        executablePath: '/usr/bin/chromium-browser',
-        headless: true,
-        args: ['--no-sandbox', '--disable-setuid-sandbox']
-    });
     
-    const page = await browser.newPage();
+    return [];
+}
 
+// 네이버 스포츠 KBO 팀 순위 API에서 데이터 가져오기
+async function getKBOTeamStandingsFromAPI(year = new Date().getFullYear()) {
+    const url = `https://api-gw.sports.naver.com/statistics/categories/kbo/seasons/${year}/teams`;
+    
     try {
-        // 네이버 스포츠 KBO 순위 페이지 접속
-        await page.goto(url, { waitUntil: "networkidle0", timeout: 30000 });
+        console.log(`KBO 팀 순위 API 호출: ${url}`);
         
-        
-        // 페이지가 완전히 로드될 때까지 기다림
-        await new Promise(resolve => setTimeout(resolve, 2000));
-        
-        // 순위 데이터 크롤링
-        if (type === "team") {
-            // 팀 순위 크롤링
-            const rawData = await page.evaluate(() => {
-                // 정확한 셀렉터로 테이블 행 선택
-                const rows = document.querySelectorAll("#regularTeamRecordList_table tr");
-                const data = [];
-    
-                rows.forEach((row) => {
-                    const columns = row.querySelectorAll("th, td");
-                    if (columns.length >= 12) {
-                        try {
-                            // 팀 이름 추출
-                            const teamElement = columns[1].querySelector("span[id^='team_']");
-                            
-                            data.push({
-                                rank: columns[0].textContent?.trim() || "",
-                                team: teamElement ? teamElement.textContent?.trim() : columns[1].textContent?.trim() || "",
-                                games: columns[2].textContent?.trim() || "",
-                                wins: columns[3].textContent?.trim() || "",
-                                losses: columns[4].textContent?.trim() || "",
-                                draws: columns[5].textContent?.trim() || "",
-                                winRate: columns[6].textContent?.trim() || "",
-                                gameBehind: columns[7].textContent?.trim() || "",
-                                streak: columns[8].textContent?.trim() || "",  // 연속 (승/패)
-                                onBaseRate: columns[9].textContent?.trim() || "", // 출루율
-                                sluggingPct: columns[10].textContent?.trim() || "", // 장타율
-                                last10Games: columns[11].textContent?.trim() || "" // 최근 10경기
-                            });
-                        } catch (err) {
-                            console.log("행 파싱 오류:", err);
-                        }
-                    }
-                });
-    
-                return data;
-            });
+        const response = await fetch(url, {
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            }
+        });
 
-            if (rawData.length > 0) {
-                return rawData;
-            }
-        } else if (type === "pitcher") {
-            // 투수 순위 크롤링
-            const pitcherData = await page.evaluate(() => {
-                const rows = document.querySelectorAll("table tbody tr");
-                const data = [];
-                
-                rows.forEach((row) => {
-                    const columns = row.querySelectorAll("th, td");
-                    if (columns.length >= 16) {
-                        try {
-                            // 선수 이름과 팀 추출
-                            const playerElement = columns[1].querySelector("a");
-                            const teamElement = columns[1].querySelector(".team");
-                            
-                            const name = playerElement?.textContent?.trim() || "";
-                            const team = teamElement?.textContent?.replace(/[\(\)]/g, "") || "";
-                            
-                            data.push({
-                                rank: columns[0].querySelector("strong")?.textContent?.trim() || "",
-                                name: name,
-                                team: team,
-                                era: columns[2].textContent?.trim() || "", // 평균자책
-                                games: columns[3].textContent?.trim() || "", // 경기수
-                                inning: columns[4].textContent?.trim() || "", // 이닝
-                                wins: columns[5].textContent?.trim() || "", // 승
-                                losses: columns[6].textContent?.trim() || "", // 패
-                                saves: columns[7].textContent?.trim() || "", // 세이브
-                                holds: columns[8].textContent?.trim() || "", // 홀드
-                                strikeouts: columns[9].textContent?.trim() || "", // 삼진
-                                hits: columns[10].textContent?.trim() || "", // 피안타
-                                homeRuns: columns[11].textContent?.trim() || "", // 피홈런
-                                runs: columns[12].textContent?.trim() || "", // 실점
-                                walks: columns[13].textContent?.trim() || "", // 볼넷
-                                hitByPitch: columns[14].textContent?.trim() || "", // 사구
-                                winRate: columns[15].textContent?.trim() || "" // 승률
-                            });
-                        } catch (err) {
-                            console.log("투수 행 파싱 오류:", err);
-                        }
-                    }
-                });
-                return data;
-            });
-            
-            if (pitcherData.length > 0) {
-                return pitcherData;
-            }
-        } else if (type === "batter") {
-            // 타자 순위 크롤링
-            const batterData = await page.evaluate(() => {
-                const rows = document.querySelectorAll("table tbody tr");
-                const data = [];
-                
-                rows.forEach((row) => {
-                    const columns = row.querySelectorAll("th, td");
-                    if (columns.length >= 16) {
-                        try {
-                            // 선수 이름과 팀 추출
-                            const playerElement = columns[1].querySelector("a");
-                            const teamElement = columns[1].querySelector(".team");
-                            
-                            const name = playerElement?.textContent?.trim() || "";
-                            const team = teamElement?.textContent?.replace(/[\(\)]/g, "") || "";
-                            
-                            // 통계 데이터 추출
-                            const battingAvg = columns[2].querySelector("strong")?.textContent?.trim() || columns[2].textContent?.trim() || "";
-                            const games = columns[3].querySelector("span")?.textContent?.trim() || "";
-                            const atBats = columns[4].querySelector("span")?.textContent?.trim() || "";
-                            const hits = columns[5].querySelector("span")?.textContent?.trim() || "";
-                            const doubles = columns[6].querySelector("span")?.textContent?.trim() || "";
-                            const triples = columns[7].querySelector("span")?.textContent?.trim() || "";
-                            const homeRuns = columns[8].querySelector("span")?.textContent?.trim() || "";
-                            const rbis = columns[9].querySelector("span")?.textContent?.trim() || "";
-                            const runs = columns[10].querySelector("span")?.textContent?.trim() || "";
-                            const stolenBases = columns[11].querySelector("span")?.textContent?.trim() || "";
-                            const walks = columns[12].querySelector("span")?.textContent?.trim() || "";
-                            const strikeouts = columns[13].querySelector("span")?.textContent?.trim() || "";
-                            const onBaseRate = columns[14].querySelector("span")?.textContent?.trim() || "";
-                            const sluggingPct = columns[15].querySelector("span")?.textContent?.trim() || "";
-                            
-                            // OPS 계산
-                            const ops = (parseFloat(onBaseRate) + parseFloat(sluggingPct)).toFixed(3);
-                            
-                            data.push({
-                                rank: columns[0].querySelector("strong")?.textContent?.trim() || "",
-                                name,
-                                team,
-                                battingAvg,
-                                games,
-                                atBats,
-                                hits,
-                                doubles,
-                                triples,
-                                homeRuns,
-                                rbis,
-                                runs,
-                                stolenBases,
-                                walks,
-                                strikeouts,
-                                onBaseRate,
-                                sluggingPct,
-                                ops
-                            });
-                        } catch (err) {
-                            console.log("타자 행 파싱 오류:", err);
-                        }
-                    }
-                });
-                return data;
-            });
-            
-            if (batterData.length > 0) {
-                return batterData;
-            }
+        if (!response.ok) {
+            throw new Error(`API 응답 오류: ${response.status}`);
         }
+
+        const data = await response.json();
         
-        console.log(`${type} 데이터 크롤링 실패, 데이터를 찾을 수 없습니다.`);
+        if (!data.success || !data.result?.seasonTeamStats) {
+            throw new Error('API 응답 데이터 구조가 올바르지 않습니다.');
+        }        // API 데이터를 기존 형식에 맞게 변환
+        const teamStats = data.result.seasonTeamStats;
+        const formattedData = teamStats.map((team: any) => ({
+            rank: team.ranking.toString(),
+            team: getTeamDisplayName(team.teamId), // teamId를 표시명으로 변환
+            games: team.gameCount.toString(),
+            wins: team.winGameCount.toString(),
+            losses: team.loseGameCount.toString(),
+            draws: team.drawnGameCount.toString(),
+            winRate: team.wra.toFixed(3),
+            gameBehind: team.gameBehind.toString(),
+            streak: team.continuousGameResult || "",
+            onBaseRate: team.offenseObp?.toFixed(3) || "",
+            sluggingPct: team.offenseSlg?.toFixed(3) || "",
+            last10Games: convertGameResultToKorean(team.lastFiveGames || "")
+        }));        console.log(`API에서 ${formattedData.length}개의 팀 데이터를 가져왔습니다.`);
+        return formattedData;    } catch (error) {
+        console.error(`KBO ${year}년 팀 순위 API 호출 오류:`, error);
         
-        // 빈 배열 반환 - 상위 코드에서 적절한 메시지 처리
+        // API 실패 시 빈 배열 반환
         return [];
-    } catch (error) {
-        console.error(`KBO ${year}년 ${type} 순위 크롤링 오류:`, error);
-        // 오류 발생 시에도 빈 배열 반환
-        return [];
-    } finally {
-        await browser.close();
     }
 }
 
-// KBO 라인업 가져오는 함수
-async function getKBOLineup(gameId: string, returnHtml: boolean = false) {
-    const url = `https://m.sports.naver.com/game/${gameId}/lineup`;
-    
-    // Puppeteer 실행
-    const browser = await puppeteer.launch({ 
-        executablePath: '/usr/bin/chromium-browser',
-        headless: true,
-        args: ['--no-sandbox', '--disable-setuid-sandbox']
-    });
-    
-    const page = await browser.newPage();
-    let html = "";
+// 네이버 스포츠 KBO 투수 순위 API에서 데이터 가져오기
+async function getKBOPitchersFromAPI(year = new Date().getFullYear()) {
+    const url = `https://api-gw.sports.naver.com/statistics/categories/kbo/seasons/${year}/players?sortField=pitcherEra&sortDirection=asc&playerType=PITCHER`;
     
     try {
+        console.log(`KBO 투수 순위 API 호출: ${url}`);
         
-        // 페이지 이동
-        await page.goto(url, { waitUntil: "networkidle0", timeout: 30000 });
+        const response = await fetch(url, {
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            }
+        });
+
+        if (!response.ok) {
+            throw new Error(`API 응답 오류: ${response.status}`);
+        }
+
+        const data = await response.json();
+          if (!data.success || !data.result?.seasonPlayerStats) {
+            throw new Error('API 응답 데이터 구조가 올바르지 않습니다.');
+        }
+
+        // API 데이터를 기존 형식에 맞게 변환
+        const players = data.result.seasonPlayerStats;
+        const formattedData = players.slice(0, 30).map((player: any, index: number) => ({
+            rank: (index + 1).toString(),
+            name: player.playerName || "",
+            team: getTeamDisplayName(player.teamId) || "", // teamId를 표시명으로 변환
+            era: player.pitcherEra?.toFixed(2) || "",
+            games: player.pitcherGameCount?.toString() || "",
+            inning: player.pitcherInning?.toString() || "",
+            wins: player.pitcherWin?.toString() || "",
+            losses: player.pitcherLose?.toString() || "",
+            saves: player.pitcherSave?.toString() || "",
+            holds: player.pitcherHold?.toString() || "",
+            strikeouts: player.pitcherKk?.toString() || "",
+            hits: player.pitcherHit?.toString() || "",
+            homeRuns: player.pitcherHr?.toString() || "",
+            runs: player.pitcherR?.toString() || "",
+            walks: player.pitcherBb?.toString() || "",
+            hitByPitch: player.pitcherHp?.toString() || "",
+            winRate: player.pitcherWra?.toFixed(3) || ""
+        }));console.log(`API에서 ${formattedData.length}개의 투수 데이터를 가져왔습니다.`);
+        return formattedData;
+
+    } catch (error) {
+        console.error(`KBO ${year}년 투수 순위 API 호출 오류:`, error);
         
-        // 페이지가 완전히 로드될 때까지 기다림 - 시간 증가
-        await new Promise(resolve => setTimeout(resolve, 5000));
+        // API 실패 시 빈 배열 반환
+        return [];
+    }
+}
+
+// 네이버 스포츠 KBO 타자 순위 API에서 데이터 가져오기
+async function getKBOBattersFromAPI(year = new Date().getFullYear()) {
+    const url = `https://api-gw.sports.naver.com/statistics/categories/kbo/seasons/${year}/players?sortField=hitterHra&sortDirection=desc&playerType=HITTER`;
+    
+    try {
+        console.log(`KBO 타자 순위 API 호출: ${url}`);
         
-        // HTML 가져오기
-        html = await page.content();
+        const response = await fetch(url, {
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            }
+        });
+
+        if (!response.ok) {
+            throw new Error(`API 응답 오류: ${response.status}`);
+        }
+
+        const data = await response.json();
+          if (!data.success || !data.result?.seasonPlayerStats) {
+            throw new Error('API 응답 데이터 구조가 올바르지 않습니다.');
+        }
+
+        // API 데이터를 기존 형식에 맞게 변환
+        const players = data.result.seasonPlayerStats;
+        const formattedData = players.slice(0, 30).map((player: any, index: number) => {
+            // OPS 계산
+            const onBaseRate = player.hitterObp || 0;
+            const sluggingPct = player.hitterSlg || 0;
+            const ops = (onBaseRate + sluggingPct).toFixed(3);
+            
+            return {
+                rank: (index + 1).toString(),
+                name: player.playerName || "",
+                team: getTeamDisplayName(player.teamId) || "", // teamId를 표시명으로 변환
+                battingAvg: player.hitterHra?.toFixed(3) || "",
+                games: player.hitterGameCount?.toString() || "",
+                atBats: player.hitterAb?.toString() || "",
+                hits: player.hitterHit?.toString() || "",
+                doubles: player.hitterH2?.toString() || "",
+                triples: player.hitterH3?.toString() || "",
+                homeRuns: player.hitterHr?.toString() || "",
+                rbis: player.hitterRbi?.toString() || "",
+                runs: player.hitterRun?.toString() || "",
+                stolenBases: player.hitterSb?.toString() || "",
+                walks: player.hitterBb?.toString() || "",
+                strikeouts: player.hitterKk?.toString() || "",
+                onBaseRate: onBaseRate.toFixed(3) || "",
+                sluggingPct: sluggingPct.toFixed(3) || "",
+                ops: ops
+            };
+        });console.log(`API에서 ${formattedData.length}개의 타자 데이터를 가져왔습니다.`);
+        return formattedData;
+
+    } catch (error) {
+        console.error(`KBO ${year}년 타자 순위 API 호출 오류:`, error);
         
-        // 라인업 컨테이너가 로드될 때까지 기다림
-        try {
-            await page.waitForSelector('.LineupTab_comp_lineup_tab__2yd4p, .Lineup_comp_lineup__35bwS', { timeout: 10000 });
-        } catch (err) {
-            console.log("라인업 셀렉터를 찾을 수 없음, 계속 진행");
+        // API 실패 시 빈 배열 반환
+        return [];
+    }
+}
+
+
+
+// KBO 라인업 가져오는 함수
+async function getKBOLineup(gameId: string, returnHtml: boolean = false) {
+    try {
+        const url = `https://api-gw.sports.naver.com/schedule/games/${gameId}/preview`;
+        
+        // returnHtml 파라미터는 하위 호환성을 위해 남겨둠 (본 함수에서는 무시됨)
+        
+        const response = await axios.get(url, {
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                'Accept': 'application/json'
+            }
+        });
+        const data = response.data;
+        
+        if (!data || !data.success || !data.result || !data.result.previewData) {
+            return { lineupData: [], html: "" };
         }
         
-        // 라인업 정보 추출 - 정확한 셀렉터 사용
-        const lineupData = await page.evaluate(() => {
-            // 팀별 라인업 영역 선택
-            const teamAreas = document.querySelectorAll('.Lineup_lineup_area__2aNOv');
-            if (!teamAreas || teamAreas.length === 0) return [];
-            
-            const result = [];
-            
-            teamAreas.forEach((team) => {
-                try {
-                    // 팀 이름 추출
-                    const teamTitleElement = team.querySelector('.Lineup_lineup_title__1WigY');
-                    const teamNameWithImage = teamTitleElement?.textContent?.trim() || "";
-                    
-                    // 이미지 태그 제거하고 순수 팀 이름만 추출 후 '선발' 단어 제거
-                    const teamNameMatch = teamNameWithImage.match(/(삼성|KIA|두산|NC|LG|SSG|키움|KT|롯데|한화).*/);
-                    let teamName = teamNameMatch ? teamNameMatch[0] : teamNameWithImage;
-                    teamName = teamName.replace('선발', ''); // '선발' 단어 제거
-                    
-                    // 선수 목록 추출
-                    const playerItems = team.querySelectorAll('.Lineup_lineup_item__32s4M');
-                    
-                    const players = Array.from(playerItems).map((playerItem) => {
-                        const nameElement = playerItem.querySelector('.Lineup_name__jV19m');
-                        const positionElement = playerItem.querySelector('.Lineup_position__265hb');
-                        const orderElement = playerItem.querySelector('.Lineup_order__1-EPy');
-                        
-                        const name = nameElement?.textContent?.trim() || "";
-                        const position = positionElement?.textContent?.trim() || "";
-                        const order = orderElement?.textContent?.trim() || "";
-                        
-                        // 선발 투수인 경우 특별 표시
-                        if (order === "선발") {
-                            return `[선발] ${name} (${position})`;
-                        }
-                        
-                        // 일반 타자인 경우 타순과 함께 표시
-                        return `${order}. ${name} (${position})`;
-                    });
-                    
-                    result.push({ teamName, players });
-                } catch (e) {
-                    console.log(`팀 정보 파싱 오류:`, e);
+        const previewData = data.result.previewData;
+        const gameInfo = previewData.gameInfo;
+        const awayLineup = previewData.awayTeamLineUp?.fullLineUp || [];
+        const homeLineup = previewData.homeTeamLineUp?.fullLineUp || [];
+        
+        const lineupData = [];
+        
+        // 원정팀 처리
+        if (awayLineup.length > 0) {
+            const players = awayLineup.map((player: any) => {
+                if (player.positionName === "선발투수") {
+                    return `[선발] ${player.playerName} (${player.positionName})`;
                 }
+                return `${player.batorder ? player.batorder + '. ' : ''}${player.playerName} (${player.positionName})`;
             });
-            
-            return result;
-        });
+            lineupData.push({ teamName: gameInfo.aName, players });
+        }
         
-        
-        // 라인업 데이터가 비어있으면 직접 텍스트로 파싱 시도
-        if (!lineupData || lineupData.length === 0 || lineupData.every(team => team.players.length === 0)) {
-            // ...existing code...
+        // 홈팀 처리
+        if (homeLineup.length > 0) {
+            const players = homeLineup.map((player: any) => {
+                if (player.positionName === "선발투수") {
+                    return `[선발] ${player.playerName} (${player.positionName})`;
+                }
+                return `${player.batorder ? player.batorder + '. ' : ''}${player.playerName} (${player.positionName})`;
+            });
+            lineupData.push({ teamName: gameInfo.hName, players });
         }
         
         return {
@@ -1666,16 +1610,13 @@ async function getKBOLineup(gameId: string, returnHtml: boolean = false) {
         };
         
     } catch (error) {
-        console.error("KBO 라인업 크롤링 오류:", error);
+        console.error("KBO 라인업 API 호출 오류:", error);
         return {
             lineupData: [],
             html: ""
         };
-    } finally {
-        await browser.close();
     }
 }
-
 // 게임 목록을 임베드에 표시하는 헬퍼 함수 추가 (코드 중복 방지)
 function displayGamesInEmbed(games: any[], embed: EmbedBuilder) {
     games.forEach((game: any) => {
@@ -1835,7 +1776,7 @@ async function showLiveGameInfo(interaction: ChatInputCommandInteraction, gameId
             }
             
             // 업데이트된 경기 정보 임베드 생성
-            const refreshedEmbed = kboNotificationService.createLiveGameEmbed(refreshedLiveData, homeTeamName, awayTeamName);
+            const refreshedEmbed = createEnhancedLiveGameEmbed(refreshedLiveData, homeTeamName, awayTeamName, targetGame);
             
             // 임베드 업데이트
             await interaction.editReply({
@@ -2493,3 +2434,14 @@ KboNotificationService.getInstance = function(client: Client) {
     
     return service;
 };
+
+
+// 경기 결과를 한국어로 변환하는 함수 (W=승, L=패, D=무)
+function convertGameResultToKorean(gameResults: string): string {
+    if (!gameResults) return "";
+    
+    return gameResults
+        .replace(/W/g, "승")
+        .replace(/L/g, "패")
+        .replace(/D/g, "무");
+}

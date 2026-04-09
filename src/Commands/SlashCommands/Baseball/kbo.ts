@@ -1368,8 +1368,25 @@ function getTeamColor(teamCode: string): number {
     return teamColors[teamCode] || 0x1E90FF; // 기본값으로 밝은 파란색 반환
 }
 
+// 팀 이모지 아이디를 반환하는 함수
+function getTeamEmoji(teamCode: string): string {
+    const emojiMap: { [key: string]: string } = {
+        'OB': '<:OB:1491656506314199061>', // 두산
+        'LT': '<:LT:1491655954897567774>', // 롯데
+        'SS': '<:SS:1491656512542871572>', // 삼성
+        'WO': '<:WO:1491656514245492886>', // 키움
+        'HH': '<:HH:1491656494134067270>', // 한화
+        'HT': '<:HT:1491656508008693790>', // KIA
+        'LG': '<:LG:1491656515957030912>', // LG
+        'NC': '<:NC:1491656495862120468>', // NC
+        'SK': '<:SK:1491656509317320786>', // SSG
+        'KT': '<:KT:1491656510894505994>'  // KT
+    };
+    return emojiMap[teamCode] || '';
+}
+
 // 팀 코드를 표시 이름으로 변환하는 함수
-function getTeamDisplayName(teamCode: string) {
+function getTeamDisplayName(teamCode: string, withEmoji: boolean = true) {
     const teamMap: { [key: string]: string } = {
         'OB': '두산',
         'LT': '롯데',
@@ -1382,7 +1399,12 @@ function getTeamDisplayName(teamCode: string) {
         'SK': 'SSG',
         'KT': 'KT'
     };
-    return teamMap[teamCode] || teamCode;
+    const name = teamMap[teamCode] || teamCode;
+    if (withEmoji) {
+        const emoji = getTeamEmoji(teamCode);
+        return emoji ? `${emoji} ${name}` : name;
+    }
+    return name;
 }
 
 // KBO 순위 가져오는 함수 (API 기반)

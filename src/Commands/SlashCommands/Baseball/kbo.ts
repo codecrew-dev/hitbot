@@ -82,7 +82,7 @@ function isUserReceivingLiveRelay(userId: string): boolean {
     }
     
     // 2. KboNotificationService의 실시간 중계 확인
-    const kboNotificationService = KboNotificationService.getInstance(null);
+    const kboNotificationService = KboNotificationService.getInstance(null as any);
     return kboNotificationService.isUserSubscribed(userId);
 }
 
@@ -370,7 +370,7 @@ export default {
                     
                     // 날짜별로 그룹화
                     const gamesByDate: { [key: string]: any[] } = {};
-                    teamGames.forEach(game => {
+                    teamGames.forEach((game: any) => {
                         const gameDate = game.gameDateTime ? game.gameDateTime.split('T')[0] : null;
                         if (!gameDate) return;
                         
@@ -1368,21 +1368,11 @@ function getTeamColor(teamCode: string): number {
     return teamColors[teamCode] || 0x1E90FF; // 기본값으로 밝은 파란색 반환
 }
 
+import { getAppEmojiTextSync } from '../../../utils/emojis';
+
 // 팀 이모지 아이디를 반환하는 함수
 function getTeamEmoji(teamCode: string): string {
-    const emojiMap: { [key: string]: string } = {
-        'OB': '<:OB:1491656506314199061>', // 두산
-        'LT': '<:LT:1491655954897567774>', // 롯데
-        'SS': '<:SS:1491656512542871572>', // 삼성
-        'WO': '<:WO:1491656514245492886>', // 키움
-        'HH': '<:HH:1491656494134067270>', // 한화
-        'HT': '<:HT:1491656508008693790>', // KIA
-        'LG': '<:LG:1491656515957030912>', // LG
-        'NC': '<:NC:1491656495862120468>', // NC
-        'SK': '<:SK:1491656509317320786>', // SSG
-        'KT': '<:KT:1491656510894505994>'  // KT
-    };
-    return emojiMap[teamCode] || '';
+    return getAppEmojiTextSync(teamCode);
 }
 
 // 팀 코드를 표시 이름으로 변환하는 함수
@@ -2037,7 +2027,7 @@ async function startDmLiveRelay(interaction: any, gameId: string) {
                 time: 3 * 60 * 60 * 1000 // 3시간 동안 유효 (경기 최대 시간 고려)
             });
             
-            collector.on('collect', async buttonInteraction => {
+            collector.on('collect', async (buttonInteraction: any) => {
                 if (buttonInteraction.customId === `stop_dmrelay_${interaction.user.id}`) {
                     stopDmLiveRelay(interaction.user.id);
                     await buttonInteraction.update({
@@ -2317,10 +2307,10 @@ KboNotificationService.getInstance = function(client: Client) {
     const service = originalKboNotificationService.call(this, client);
     
     // 원래 sendGameStartingNotification 함수 보존
-    const originalSendGameStartingNotification = service.sendGameStartingNotification;
+    const originalSendGameStartingNotification = (service as any).sendGameStartingNotification;
     
     // 함수 재정의 - 실시간 중계 버튼 추가
-    service.sendGameStartingNotification = async function(userId: string, gameInfo: any) {
+    (service as any).sendGameStartingNotification = async function(userId: string, gameInfo: any) {
         try {
             const user = await client.users.fetch(userId);
             if (!user) return false;

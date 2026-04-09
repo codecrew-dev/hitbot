@@ -486,11 +486,24 @@ export class KboNotificationService {
     
     // 해당 시간에 알림을 보내는 작업 등록
     Scheduler.scheduleOnce(jobName, notificationTime, async () => {
+      // 알림 전송 전에 경기가 취소되었는지 최종 확인
+      const updatedGameInfo = await this.getUpdatedGameInfo(gameId);
+      
+      if (!updatedGameInfo) {
+        console.log(`${gameId} 경기 정보를 가져올 수 없어 알림을 취소합니다.`);
+        return;
+      }
+      
+      if (updatedGameInfo.cancel) {
+        console.log(`${gameId} 경기가 취소되어 시작 알림을 전송하지 않습니다.`);
+        return;
+      }
+      
       // 홈팀 팬들에게 알림
-      await this.notifyTeamFans(homeTeamCode, gameInfo, true);
+      await this.notifyTeamFans(homeTeamCode, updatedGameInfo, true);
       
       // 원정팀 팬들에게 알림
-      await this.notifyTeamFans(awayTeamCode, gameInfo, false);
+      await this.notifyTeamFans(awayTeamCode, updatedGameInfo, false);
     });
   }
 
@@ -1320,44 +1333,78 @@ export class KboNotificationService {
         await new Promise(resolve => setTimeout(resolve, 5000));
 
         try {
-          await page.waitForSelector('.LineupTab_comp_lineup_tab__2yd4p, .Lineup_comp_lineup__35bwS', { timeout: 10000 });
+          await page.waitForSelector('.Lineup_comp_lineup__361i1', { timeout: 10000 });
         } catch (err) {
           console.log("라인업 셀렉터를 찾을 수 없음, 계속 진행");
         }
 
         const lineupData = await page.evaluate(() => {
-          const teamAreas = document.querySelectorAll('.Lineup_lineup_area__2aNOv');
-          if (!teamAreas || teamAreas.length === 0) return [];
+          // 라인업 컨테이너 선택
+          const lineupContainer = document.querySelector('.Lineup_comp_lineup__361i1');
+          if (!lineupContainer) return [];
 
           const result = [];
 
-          teamAreas.forEach((team) => {
+          // 각 팀의 라인업 영역 선택 (실제 클래스명 사용)
+          const teamAreas = lineupContainer.querySelectorAll('.Lineup_lineup_area__1yURq');
+
+          teamAreas.forEach((teamArea) => {
             try {
-              const teamTitleElement = team.querySelector('.Lineup_lineup_title__1WigY');
-              const teamNameWithImage = teamTitleElement?.textContent?.trim() || "";
-              const teamNameMatch = teamNameWithImage.match(/(삼성|KIA|두산|NC|LG|SSG|키움|KT|롯데|한화).*/);
-              let teamName = teamNameMatch ? teamNameMatch[0] : teamNameWithImage;
-              teamName = teamName.replace('선발', '');
+              // 팀 이름 추출 (실제 클래스명 사용)
+              const teamTitleElement = teamArea.querySelector('.Lineup_lineup_title__3pWMB');
+              let teamName = "";
 
-              const playerItems = team.querySelectorAll('.Lineup_lineup_item__32s4M');
+              if (teamTitleElement) {
+                const teamNameText = teamTitleElement.textContent?.trim() || "";
+                // 팀 이름에서 '선발' 등의 불필요한 텍스트 제거
+                const teamNameMatch = teamNameText.match(/(삼성|KIA|두산|NC|LG|SSG|키움|KT|롯데|한화)/);
+                teamName = teamNameMatch ? teamNameMatch[0] : teamNameText.replace(/선발/g, '').trim();
+              }
+
+              // 라인업 리스트 선택 (실제 클래스명 사용)
+              const lineupList = teamArea.querySelector('.Lineup_lineup_list__1g5nJ');
+              if (!lineupList) return;
+
+              // 각 선수 정보 추출
+              const playerItems = lineupList.querySelectorAll('.Lineup_lineup_item__2AXR8');
+
               const players = Array.from(playerItems).map((playerItem) => {
-                const nameElement = playerItem.querySelector('.Lineup_name__jV19m');
-                const positionElement = playerItem.querySelector('.Lineup_position__265hb');
-                const orderElement = playerItem.querySelector('.Lineup_order__1-EPy');
-                const name = nameElement?.textContent?.trim() || "";
-                const position = positionElement?.textContent?.trim() || "";
-                const order = orderElement?.textContent?.trim() || "";
+                try {
+                  // 타순/포지션 정보 추출 (실제 클래스명 사용)
+                  const orderElement = playerItem.querySelector('.Lineup_order__F3OtA');
+                  const order = orderElement?.textContent?.trim() || "";
 
-                if (order === "선발") {
-                  return `[선발] ${name} (${position})`;
+                  // 선수 이름 추출 (실제 클래스명 사용)
+                  const nameElement = playerItem.querySelector('.Lineup_name__Q5oDC');
+                  const name = nameElement?.textContent?.trim() || "";
+
+                  // 포지션 정보 추출 (실제 클래스명 사용)
+                  const positionElement = playerItem.querySelector('.Lineup_position__2fA4L');
+                  const position = positionElement?.textContent?.trim() || "";
+
+                  // 선발 투수인 경우 특별 표시 (선발 텍스트 확인 또는 투수 포지션)
+                  if (order === "선발" || position.includes("투")) {
+                    return `[선발] ${name} (${position})`;
+                  }
+
+                  // 일반 타자인 경우 타순과 함께 표시
+                  if (order && order !== "선발" && !isNaN(parseInt(order))) {
+                    return `${order}. ${name} (${position})`;
+                  }
+
+                  // 기타 선수 (대기, 교체 등)
+                  return `${name} (${position})`;
+                } catch (e) {
+                  console.log("선수 정보 파싱 오류:", e);
+                  return "";
                 }
+              }).filter(player => player !== ""); // 빈 문자열 제거
 
-                return `${order}. ${name} (${position})`;
-              });
-
-              result.push({ teamName, players });
+              if (teamName && players.length > 0) {
+                result.push({ teamName, players });
+              }
             } catch (e) {
-              console.log(`팀 정보 파싱 오류:`, e);
+              console.log("팀 정보 파싱 오류:", e);
             }
           });
 

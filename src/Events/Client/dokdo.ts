@@ -1,4 +1,4 @@
-import { Events } from "discord.js";
+import { Events, Message } from "discord.js";
 import * as Dokdo from "dokdo";
 import { client } from "../../index";
 
@@ -11,7 +11,7 @@ const DokdoHandler = new Dokdo.Client(client, {
 
 export default {
   name: Events.MessageCreate,
-  execute: async (message) => {
+  execute: async (message: Message) => {
     await DokdoHandler.run(message);
   },
 };

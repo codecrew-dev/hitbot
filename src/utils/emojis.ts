@@ -18,6 +18,22 @@ export async function fetchAppEmojis(client: Client): Promise<void> {
     }
 }
 
+export function getAppEmojiObjectSync(emojiName: string): { id: string; name: string } | null {
+    if (!emojiName) return null;
+
+    if (appEmojiCache) {
+        const appEmoji = appEmojiCache.find((entry: any) => entry.name?.toLowerCase() === emojiName.toLowerCase());
+        if (appEmoji?.id) return { id: appEmoji.id, name: appEmoji.name };
+    }
+
+    if (savedClient && savedClient.emojis.cache) {
+        const guildEmoji = savedClient.emojis.cache.find(entry => entry.name?.toLowerCase() === emojiName.toLowerCase());
+        if (guildEmoji?.id) return { id: guildEmoji.id, name: guildEmoji.name! };
+    }
+
+    return null;
+}
+
 export function getAppEmojiTextSync(emojiName: string): string {
     if (!emojiName) return '';
 

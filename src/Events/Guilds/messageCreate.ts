@@ -19,7 +19,7 @@ export default {
       .slice(config.prefix.length)
       .trim()
       .split(/ +/g);
-    const commandName = args.shift().toLowerCase();
+    const commandName = (args.shift() ?? "").toLowerCase();
     const command =
       client.commands.get(commandName) ||
       client.commands.find(
@@ -55,11 +55,11 @@ export default {
     }
 
     const now = Date.now();
-    const timestamps = cooldowns.get(command.name);
+    const timestamps = cooldowns.get(command.name)!;
     const cooldownAmount = (command.cooldown || 1) * 1000;
 
     if (timestamps.has(message.author.id)) {
-      const expirationTime = timestamps.get(message.author.id) + cooldownAmount;
+      const expirationTime = timestamps.get(message.author.id)! + cooldownAmount;
       if (now < expirationTime) {
         const timeLeft = (expirationTime - now) / 1000;
         const timeLeftEmbed = new EmbedBuilder()

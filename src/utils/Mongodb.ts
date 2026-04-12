@@ -196,9 +196,9 @@ export class NotificationHistory {
 
   // 알림이 이미 전송되었는지 확인
   static async hasNotificationBeenSent(
-    userId: string,
+    userId: string | null,
     gameId: string,
-    teamCode: string,
+    teamCode: string | null,
     type: 'lineup' | 'gametime' | 'cancel' | 'result' // 타입 확장
   ): Promise<boolean> {
     ensureConnected();

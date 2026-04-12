@@ -2,6 +2,7 @@ import { Client, EmbedBuilder, User, ButtonBuilder, ActionRowBuilder, ButtonStyl
 import axios from 'axios';
 import * as MongoDB from '../utils/Mongodb';
 import { Scheduler } from '../utils/scheduler';
+import { getAppEmojiTextSync } from '../utils/emojis';
 
 /**
  * KBO 알림 서비스 클래스
@@ -93,16 +94,10 @@ export class KboNotificationService {
     console.log('오늘의 KBO 경기 일정을 확인합니다.');
     
     try {
-      const today = new Date();
-      const formattedDate = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
-      
-      // API에서 경기 일정 가져오기
-      const url = `https://api-gw.sports.naver.com/schedule/games?fields=basic%2Cschedule%2Cbaseball&upperCategoryId=kbaseball&fromDate=${formattedDate}&toDate=${formattedDate}&size=500`;
-      const response = await axios.get(url);
-      const games = (response.data as any)?.result?.games.filter((game: any) => game.categoryId === "kbo") || [];
-      
-      if (!games || games.length === 0) {
-        console.log(`${formattedDate}에 예정된 KBO 경기가 없습니다.`);
+      const games = await this.fetchTodaySchedule();
+
+      if (games.length === 0) {
+        console.log(`${this.getTodayFormatted()}에 예정된 KBO 경기가 없습니다.`);
         return;
       }
       
@@ -324,11 +319,13 @@ export class KboNotificationService {
       const opponentTeamCode = isHomeTeam ? gameInfo.awayTeamCode : gameInfo.homeTeamCode;
       const opponentTeamName = isHomeTeam ? gameInfo.awayTeamName : gameInfo.homeTeamName;
       const myTeamName = isHomeTeam ? gameInfo.homeTeamName : gameInfo.awayTeamName;
-      
+      const myTeamDisplay = this.getTeamDisplayName(teamCode);
+      const opponentTeamDisplay = this.getTeamDisplayName(opponentTeamCode);
+
       // 경기 시간 포맷팅
       const gameDateTime = new Date(gameInfo.gameDateTime);
       const formattedTime = `${gameDateTime.getHours().toString().padStart(2, '0')}:${gameDateTime.getMinutes().toString().padStart(2, '0')}`;
-      
+
       // 상대팀 라인업 데이터 가져오기
       const opponentLineupIndex = isHomeTeam ? 0 : 1; // 홈팀이면 0(원정팀), 원정팀이면 1(홈팀)
       const result = await this.getKBOLineup(gameId);
@@ -358,23 +355,22 @@ export class KboNotificationService {
             // 라인업 알림 임베드 생성
             const embed = new EmbedBuilder()
               .setColor(this.getTeamColor(teamCode))
-              .setTitle(`⚾ ${myTeamName} 라인업 발표!`)
+              .setTitle(`⚾ ${myTeamDisplay} 라인업 발표!`)
               .setDescription(`${gameInfo.stadium || '경기장 미정'} (${formattedTime})`)
               .setThumbnail('https://6ptotvmi5753.edge.naverncp.com/KBO_IMAGE/KBOHome/resources/images/common/h2_logo.png')
               .addFields({
-                name: `📋 ${myTeamName} vs ${opponentTeamName}`,
+                name: `📋 ${myTeamDisplay} vs ${opponentTeamDisplay}`,
                 value: lineupData.players.join('\n') || "라인업 정보 없음",
                 inline: false
               })
               .setFooter({ text: `경기 ID: ${gameId}` })
               .setTimestamp();
-            
+
             // 상대팀 라인업 보기 버튼 추가
             const opponentLineupButton = new ButtonBuilder()
               .setCustomId(`opponent_lineup_${gameId}_${opponentTeamCode}`)
               .setLabel(`${opponentTeamName} 라인업 보기`)
-              .setStyle(ButtonStyle.Primary)
-              .setEmoji('👀');
+              .setStyle(ButtonStyle.Primary);
             
             const row = new ActionRowBuilder<ButtonBuilder>().addComponents(opponentLineupButton);
             
@@ -396,11 +392,11 @@ export class KboNotificationService {
                 // 상대팀 라인업 임베드 생성
                 const opponentEmbed = new EmbedBuilder()
                   .setColor(this.getTeamColor(opponentTeamCode))
-                  .setTitle(`⚾ ${opponentTeamName} 라인업 정보`)
+                  .setTitle(`⚾ ${opponentTeamDisplay} 라인업 정보`)
                   .setDescription(`${gameInfo.stadium || '경기장 미정'} (${formattedTime})`)
                   .setThumbnail('https://6ptotvmi5753.edge.naverncp.com/KBO_IMAGE/KBOHome/resources/images/common/h2_logo.png')
                   .addFields({
-                    name: `📋 ${opponentTeamName} 라인업`,
+                    name: `📋 ${opponentTeamDisplay} 라인업`,
                     value: opponentLineupData && opponentLineupData.players ? 
                           opponentLineupData.players.join('\n') : 
                           "라인업 정보가 아직 발표되지 않았습니다.",
@@ -424,19 +420,7 @@ export class KboNotificationService {
           } catch (error) {
             console.error(`사용자 ${userId}에게 DM 전송 실패:`, error);
 
-            // DM 전송 실패 시 알림 설정 비활성화
-            await MongoDB.kboUser.kbouser_notifications_toggle(userId, false);
-            console.log(`사용자 ${userId}의 알림 설정이 비활성화되었습니다.`);
-
-            // 공지 채널에 메시지 전송
-            try {
-              const channel = await this.client.channels.fetch('1279705542226481174');
-              if (channel?.isTextBased()) {
-                await (channel as TextChannel).send(`⚠️ 사용자 <@${userId}>에게 DM을 보낼 수 없습니다. 알림 설정이 비활성화되었습니다.`);
-              }
-            } catch (channelError) {
-              console.error('공지 채널 메시지 전송 실패:', channelError);
-            }
+            await this.handleDmFailure(userId);
           }
         } catch (error) {
           console.error(`팬 ${fan.user_id}에게 DM 보내기 실패:`, error);
@@ -452,18 +436,8 @@ export class KboNotificationService {
    */
   private async getUpdatedGameInfo(gameId: string): Promise<any> {
     try {
-      const today = new Date();
-      const formattedDate = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
-      
-      // API에서 경기 일정 가져오기
-      const url = `https://api-gw.sports.naver.com/schedule/games?fields=basic%2Cschedule%2Cbaseball&upperCategoryId=kbaseball&fromDate=${formattedDate}&toDate=${formattedDate}&size=500`;
-      const response = await axios.get(url);
-      const games = (response.data as any)?.result?.games.filter((game: any) => game.categoryId === "kbo") || [];
-      
-      // 해당 gameId의 경기 찾기
-      const game = games.find((g: any) => g.gameId === gameId);
-      return game || null;
-      
+      const games = await this.fetchTodaySchedule();
+      return games.find((g: any) => g.gameId === gameId) || null;
     } catch (error) {
       console.error(`경기 정보 업데이트 확인 중 오류 발생:`, error);
       return null;
@@ -523,16 +497,16 @@ export class KboNotificationService {
       }
       
       console.log(`${teamCode} 팀의 ${teamFans.length}명의 팬들에게 경기 시작 알림을 보냅니다.`);
-      
+
       // 상대팀 정보
       const opponentTeamCode = isHomeTeam ? gameInfo.awayTeamCode : gameInfo.homeTeamCode;
-      const opponentTeamName = isHomeTeam ? gameInfo.awayTeamName : gameInfo.homeTeamName;
-      const myTeamName = isHomeTeam ? gameInfo.homeTeamName : gameInfo.awayTeamName;
-      
+      const myTeamDisplay = this.getTeamDisplayName(teamCode);
+      const opponentTeamDisplay = this.getTeamDisplayName(opponentTeamCode);
+
       // 경기 시간 포맷팅
       const gameDateTime = new Date(gameInfo.gameDateTime);
       const formattedTime = `${gameDateTime.getHours().toString().padStart(2, '0')}:${gameDateTime.getMinutes().toString().padStart(2, '0')}`;
-      
+
       // 각 팬에게 DM 보내기
       for (const fan of teamFans) {
         try {
@@ -540,9 +514,9 @@ export class KboNotificationService {
 
           // 이미 알림을 보냈는지 확인
           const alreadySent = await MongoDB.NotificationHistory.hasNotificationBeenSent(
-            userId, 
-            gameId, 
-            teamCode, 
+            userId,
+            gameId,
+            teamCode,
             'gametime'
           );
 
@@ -557,8 +531,8 @@ export class KboNotificationService {
             // 경기 시작 알림 임베드 생성
             const embed = new EmbedBuilder()
               .setColor(this.getTeamColor(teamCode))
-              .setTitle(`⚾ ${myTeamName} 경기가 시작되었습니다!`)
-              .setDescription(`${myTeamName} vs ${opponentTeamName}\n${gameInfo.stadium || '경기장 미정'} (${formattedTime})`)
+              .setTitle(`⚾ ${myTeamDisplay} 경기가 시작되었습니다!`)
+              .setDescription(`${myTeamDisplay} vs ${opponentTeamDisplay}\n${gameInfo.stadium || '경기장 미정'} (${formattedTime})`)
               .setThumbnail('https://6ptotvmi5753.edge.naverncp.com/KBO_IMAGE/KBOHome/resources/images/common/h2_logo.png')
               .addFields({
                 name: '📺 중계 정보',
@@ -571,16 +545,36 @@ export class KboNotificationService {
             // 실시간 중계 구독 버튼 추가
             const subscribeButton = new ButtonBuilder()
               .setCustomId(`subscribe_relay_${gameId}`)
-              .setLabel('실시간 중계 보기')
+              .setLabel('DM 중계 시작')
               .setStyle(ButtonStyle.Success)
-              .setEmoji('📲');
+              .setEmoji('📱');
 
             const row = new ActionRowBuilder<ButtonBuilder>().addComponents(subscribeButton);
 
             // 임베드와 버튼을 함께 전송
-            const message = await user.send({ 
+            const message = await user.send({
               embeds: [embed],
               components: [row]
+            });
+
+            // 버튼 클릭 이벤트 리스너 (무기한 작동)
+            const collector = message.createMessageComponentCollector({
+              componentType: ComponentType.Button
+            });
+
+            collector.on('collect', async interaction => {
+              if (interaction.customId === `subscribe_relay_${gameId}`) {
+                const { isUserReceivingLiveRelay, startDmLiveRelay } = await import('../Commands/SlashCommands/Baseball/kbo');
+                if (isUserReceivingLiveRelay(interaction.user.id)) {
+                  await interaction.reply({
+                    content: "❌ **이미 실시간 중계를 받고 계십니다.**\n현재 중계를 종료하려면 `/kbo dm중계 경기id:종료종료` 명령어를 사용해주세요.",
+                    ephemeral: true
+                  });
+                  return;
+                }
+                await interaction.deferReply({ ephemeral: true });
+                await startDmLiveRelay(interaction, gameId);
+              }
             });
 
             console.log(`${user.tag}님에게 ${teamCode} 팀 경기 시작 알림을 보냈습니다.`);
@@ -590,19 +584,7 @@ export class KboNotificationService {
           } catch (error) {
             console.error(`사용자 ${userId}에게 DM 전송 실패:`, error);
 
-            // DM 전송 실패 시 알림 설정 비활성화
-            await MongoDB.kboUser.kbouser_notifications_toggle(userId, false);
-            console.log(`사용자 ${userId}의 알림 설정이 비활성화되었습니다.`);
-
-            // 공지 채널에 메시지 전송
-            try {
-              const channel = await this.client.channels.fetch('1279705542226481174');
-              if (channel?.isTextBased()) {
-                await (channel as TextChannel).send(`⚠️ 사용자 <@${userId}>에게 DM을 보낼 수 없습니다. 알림 설정이 비활성화되었습니다.`);
-              }
-            } catch (channelError) {
-              console.error('공지 채널 메시지 전송 실패:', channelError);
-            }
+            await this.handleDmFailure(userId);
           }
         } catch (error) {
           console.error(`팬 ${fan.user_id}에게 DM 보내기 실패:`, error);
@@ -652,14 +634,7 @@ export class KboNotificationService {
       const gameInfo = { homeTeamName: teamName, awayTeamName: opponentName, gameId };
       const initialEmbed = this.createEnhancedLiveGameEmbed(initialData, teamName, opponentName, gameInfo);
 
-      // 중계 중지 버튼 추가
-      const stopButton = new ButtonBuilder()
-        .setCustomId(`stop_relay_${gameId}`)
-        .setLabel('중계 종료')
-        .setStyle(ButtonStyle.Danger)
-        .setEmoji('⏹️');
-
-      const row = new ActionRowBuilder<ButtonBuilder>().addComponents(stopButton);
+      const row = new ActionRowBuilder<ButtonBuilder>().addComponents(this.createStopRelayButton(gameId));
 
       // 시작 메시지 전송
       const startMessage = await user.send({
@@ -770,14 +745,7 @@ export class KboNotificationService {
       // 최신 임베드 생성
       const gameInfo = { homeTeamName: teamName, awayTeamName: opponentName, gameId };
       const updatedEmbed = this.createEnhancedLiveGameEmbed(liveData, teamName, opponentName, gameInfo);
-
-      const stopButton = new ButtonBuilder()
-        .setCustomId(`stop_relay_${gameId}`)
-        .setLabel('중계 종료')
-        .setStyle(ButtonStyle.Danger)
-        .setEmoji('⏹️');
-
-      const row = new ActionRowBuilder<ButtonBuilder>().addComponents(stopButton);
+      const row = new ActionRowBuilder<ButtonBuilder>().addComponents(this.createStopRelayButton(gameId));
 
       await message.edit({
         content: `⚾ **${teamName} vs ${opponentName}** 실시간 중계 \n(${new Date().toLocaleTimeString()} 업데이트)`,
@@ -895,21 +863,9 @@ export class KboNotificationService {
     const base2 = gameState.base2 && gameState.base2 !== "0" ? "🟡" : "⚪";
     const base3 = gameState.base3 && gameState.base3 !== "0" ? "🟡" : "⚪";
     
-    // 현재 공/수 상태에 따른 메시지
-    const attackTeam = isAwayTeam ? teamName : opponentName;
-    const defenseTeam = isAwayTeam ? opponentName : teamName;
-    
-    // 이닝 표시 문구 개선
-    let inningStr = `${inning}회${isAwayTeam ? '초' : '말'}`;
-    if (gameState.statusCode === "RESULT" || gameState.statusCode === "FINAL") {
-      inningStr = "경기 종료";
-    }
-
     // 현재 타자 및 투수 정보 가져오기
     let currentBatter = "정보 없음";
     let currentPitcher = "정보 없음";
-    let batterStats = "";
-    let pitcherStats = "";
     
     // 현재 타자 정보
     if (gameState.batter) {
@@ -921,10 +877,6 @@ export class KboNotificationService {
         const batter = batterLineup.find((b: any) => b.pcode === gameState.batter);
         if (batter) {
           currentBatter = `${batter.name} (${batter.posName})`;
-          // 타자 성적 정보 추가
-          if (batter.hitType) {
-            batterStats = `타율: ${batter.avg || '-.---'} | ${batter.hitType}`;
-          }
         }
       }
     }
@@ -939,8 +891,6 @@ export class KboNotificationService {
         const pitcher = pitcherLineup.find((p: any) => p.pcode === gameState.pitcher);
         if (pitcher) {
           currentPitcher = `${pitcher.name}`;
-          // 투수 성적 정보 추가
-          pitcherStats = `ERA: ${pitcher.era || '-.--'} | ${pitcher.pitchCnt || 0}구`;
         }
       }
     }
@@ -1077,7 +1027,6 @@ export class KboNotificationService {
       if (!isAwayTeam && homeScore > awayScore) {
         return true;
       }
-      ;
       // 9회말이 끝났는데 어웨이팀이 표시되면 경기가 종료된 것으로 간주
       if (isAwayTeam && parseInt(inn) > 9) {
         return true;
@@ -1093,7 +1042,7 @@ export class KboNotificationService {
   private async checkAllActiveRelays(): Promise<void> {
     console.log(`활성화된 중계 ${this.liveRelaySubscriptions.size}개 상태 확인 중...`);
     
-    for (const [key, subscription] of this.liveRelaySubscriptions.entries()) {
+    for (const [, subscription] of this.liveRelaySubscriptions.entries()) {
       try {
         // 경기 정보 확인
         const gameData = await this.getGameLiveData(subscription.gameId);
@@ -1147,7 +1096,7 @@ export class KboNotificationService {
       .filter(([_, subscription]) => subscription.gameId === gameId);
     
     // 각 구독 중지
-    for (const [key, subscription] of subscriptions) {
+    for (const [, subscription] of subscriptions) {
       await this.stopLiveRelay(subscription.userId, gameId,
         "경기가 종료되었거나 취소되어 실시간 중계를 종료합니다.");
     }
@@ -1314,127 +1263,43 @@ export class KboNotificationService {
    * KBO 라인업을 가져오는 함수
    */
   async getKBOLineup(gameId: string): Promise<{ lineupData: any }> {
-    const MAX_RETRIES = 3; // 최대 재시도 횟수
-    const RETRY_DELAY = 5000; // 재시도 간격 (밀리초)
-
-    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-      try {
-        const puppeteer = await import('puppeteer');
-        const url = `https://m.sports.naver.com/game/${gameId}/lineup`;
-        const browser = await puppeteer.default.launch({ 
-          executablePath: '/usr/bin/chromium-browser',
-          headless: true,
-          args: ['--no-sandbox', '--disable-setuid-sandbox']
-        });
-        const page = await browser.newPage();
-        console.log(`KBO 라인업 크롤링 시도 ${attempt}/${MAX_RETRIES}: ${url}`);
-
-        await page.goto(url, { waitUntil: "networkidle0", timeout: 30000 });
-        await new Promise(resolve => setTimeout(resolve, 5000));
-
-        try {
-          await page.waitForSelector('.Lineup_comp_lineup__361i1', { timeout: 10000 });
-        } catch (err) {
-          console.log("라인업 셀렉터를 찾을 수 없음, 계속 진행");
+    try {
+      const { data } = await axios.get(`https://api-gw.sports.naver.com/schedule/games/${gameId}/preview`, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+          'Accept': 'application/json'
         }
-
-        const lineupData = await page.evaluate(() => {
-          // 라인업 컨테이너 선택
-          const lineupContainer = document.querySelector('.Lineup_comp_lineup__361i1');
-          if (!lineupContainer) return [];
-
-          const result = [];
-
-          // 각 팀의 라인업 영역 선택 (실제 클래스명 사용)
-          const teamAreas = lineupContainer.querySelectorAll('.Lineup_lineup_area__1yURq');
-
-          teamAreas.forEach((teamArea) => {
-            try {
-              // 팀 이름 추출 (실제 클래스명 사용)
-              const teamTitleElement = teamArea.querySelector('.Lineup_lineup_title__3pWMB');
-              let teamName = "";
-
-              if (teamTitleElement) {
-                const teamNameText = teamTitleElement.textContent?.trim() || "";
-                // 팀 이름에서 '선발' 등의 불필요한 텍스트 제거
-                const teamNameMatch = teamNameText.match(/(삼성|KIA|두산|NC|LG|SSG|키움|KT|롯데|한화)/);
-                teamName = teamNameMatch ? teamNameMatch[0] : teamNameText.replace(/선발/g, '').trim();
-              }
-
-              // 라인업 리스트 선택 (실제 클래스명 사용)
-              const lineupList = teamArea.querySelector('.Lineup_lineup_list__1g5nJ');
-              if (!lineupList) return;
-
-              // 각 선수 정보 추출
-              const playerItems = lineupList.querySelectorAll('.Lineup_lineup_item__2AXR8');
-
-              const players = Array.from(playerItems).map((playerItem) => {
-                try {
-                  // 타순/포지션 정보 추출 (실제 클래스명 사용)
-                  const orderElement = playerItem.querySelector('.Lineup_order__F3OtA');
-                  const order = orderElement?.textContent?.trim() || "";
-
-                  // 선수 이름 추출 (실제 클래스명 사용)
-                  const nameElement = playerItem.querySelector('.Lineup_name__Q5oDC');
-                  const name = nameElement?.textContent?.trim() || "";
-
-                  // 포지션 정보 추출 (실제 클래스명 사용)
-                  const positionElement = playerItem.querySelector('.Lineup_position__2fA4L');
-                  const position = positionElement?.textContent?.trim() || "";
-
-                  // 선발 투수인 경우 특별 표시 (선발 텍스트 확인 또는 투수 포지션)
-                  if (order === "선발" || position.includes("투")) {
-                    return `[선발] ${name} (${position})`;
-                  }
-
-                  // 일반 타자인 경우 타순과 함께 표시
-                  if (order && order !== "선발" && !isNaN(parseInt(order))) {
-                    return `${order}. ${name} (${position})`;
-                  }
-
-                  // 기타 선수 (대기, 교체 등)
-                  return `${name} (${position})`;
-                } catch (e) {
-                  console.log("선수 정보 파싱 오류:", e);
-                  return "";
-                }
-              }).filter(player => player !== ""); // 빈 문자열 제거
-
-              if (teamName && players.length > 0) {
-                result.push({ teamName, players });
-              }
-            } catch (e) {
-              console.log("팀 정보 파싱 오류:", e);
-            }
-          });
-
-          return result;
-        });
-
-        await browser.close();
-
-        return {
-          lineupData: lineupData
-        };
-
-      } catch (error) {
-        console.error(`KBO 라인업 크롤링 오류 (시도 ${attempt}/${MAX_RETRIES}):`, error);
-
-        if (attempt < MAX_RETRIES) {
-          console.log(`재시도 대기 중... (${RETRY_DELAY / 1000}초)`);
-          await new Promise(resolve => setTimeout(resolve, RETRY_DELAY));
-        } else {
-          console.error("최대 재시도 횟수를 초과했습니다.");
-          return {
-            lineupData: []
-          };
-        }
+      });
+      
+      if (!data?.success || !data?.result?.previewData) {
+        return { lineupData: [] };
       }
+      
+      const { gameInfo, awayTeamLineUp, homeTeamLineUp } = data.result.previewData;
+      const awayList = awayTeamLineUp?.fullLineUp || [];
+      const homeList = homeTeamLineUp?.fullLineUp || [];
+      
+      const lineupData: any[] = [];
+      
+      if (awayList.length > 0) {
+        lineupData.push({
+          teamName: gameInfo.aName,
+          players: awayList.map((p: any) => p.positionName === "선발투수" ? `[선발] ${p.playerName} (투수)` : `${p.batorder ? p.batorder + '. ' : ''}${p.playerName} (${p.positionName})`)
+        });
+      }
+      
+      if (homeList.length > 0) {
+        lineupData.push({
+          teamName: gameInfo.hName,
+          players: homeList.map((p: any) => p.positionName === "선발투수" ? `[선발] ${p.playerName} (투수)` : `${p.batorder ? p.batorder + '. ' : ''}${p.playerName} (${p.positionName})`)
+        });
+      }
+      
+      return { lineupData };
+    } catch (error) {
+      console.error('API 라인업 조회 오류 (notificationService):', error);
+      return { lineupData: [] };
     }
-
-    return {
-      lineupData: []
-    };
   }
 
   /**
@@ -1457,22 +1322,27 @@ export class KboNotificationService {
   }
 
   /**
+   * 팀 코드에 맞는 표시 이름(이모지 + 팀명)을 반환합니다
+   */
+  private getTeamDisplayName(teamCode: string): string {
+    const names: { [key: string]: string } = {
+      'OB': '두산', 'LT': '롯데', 'SS': '삼성', 'WO': '키움',
+      'HH': '한화', 'HT': 'KIA', 'LG': 'LG', 'NC': 'NC',
+      'SK': 'SSG', 'KT': 'KT'
+    };
+    const name = names[teamCode] || teamCode;
+    const emoji = getAppEmojiTextSync(teamCode);
+    return emoji ? `${emoji} ${name}` : name;
+  }
+
+  /**
    * 오늘의 모든 경기 상태를 확인하고 필요한 알림을 전송합니다
    * (경기 취소, 종료 등의 알림을 위한 모니터링)
    */
   private async monitorGameStatuses(): Promise<void> {
     try {
-      const today = new Date();
-      const formattedDate = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
-      
-      // API에서 경기 일정 가져오기
-      const url = `https://api-gw.sports.naver.com/schedule/games?fields=basic%2Cschedule%2Cbaseball&upperCategoryId=kbaseball&fromDate=${formattedDate}&toDate=${formattedDate}&size=500`;
-      const response = await axios.get(url);
-      const games = (response.data as any)?.result?.games.filter((game: any) => game.categoryId === "kbo") || [];
-      
-      if (!games || games.length === 0) {
-        return; // 오늘 예정된 경기가 없음
-      }
+      const games = await this.fetchTodaySchedule();
+      if (games.length === 0) return;
       
       // 각 경기의 상태 확인
       for (const game of games) {
@@ -1546,16 +1416,11 @@ export class KboNotificationService {
       if (teamFans.length === 0) return;
       
       // 경기 정보
-      const homeTeamName = gameInfo.homeTeamName;
-      const awayTeamName = gameInfo.awayTeamName;
-      const myTeamName = isHomeTeam ? homeTeamName : awayTeamName;
-      const opponentTeamName = isHomeTeam ? awayTeamName : homeTeamName;
-        
+      const opponentTeamCode = isHomeTeam ? gameInfo.awayTeamCode : gameInfo.homeTeamCode;
+      const myTeamDisplay = this.getTeamDisplayName(teamCode);
+      const opponentTeamDisplay = this.getTeamDisplayName(opponentTeamCode);
+
       console.log(`${teamCode} 팀 ${teamFans.length}명의 팬들에게 경기 취소 알림을 보냅니다.`);
-      
-      // 하이라이트 URL용 날짜 포맷팅
-      const today = new Date();
-      const formattedDate = `${today.getFullYear()}${String(today.getMonth() + 1).padStart(2, '0')}${String(today.getDate()).padStart(2, '0')}`;
 
       // 각 팬에게 DM 보내기
       for (const fan of teamFans) {
@@ -1579,13 +1444,8 @@ export class KboNotificationService {
           // 취소 알림 임베드 생성
           const embed = new EmbedBuilder()
             .setColor(this.getTeamColor(teamCode))
-            .setTitle(`⚾ ${myTeamName} 경기 취소 알림`)
-            .setDescription(`${myTeamName} vs ${opponentTeamName} 경기가 취소되었습니다.`)
-            .addFields({
-              name: '취소 사유',
-              value: gameInfo.cancelReason || '사유가 명시되지 않았습니다',
-              inline: false
-            })
+            .setTitle(`⚾ ${myTeamDisplay} 경기 취소 알림`)
+            .setDescription(`${myTeamDisplay} vs ${opponentTeamDisplay} 경기가 취소되었습니다.`)
             .setThumbnail('https://6ptotvmi5753.edge.naverncp.com/KBO_IMAGE/KBOHome/resources/images/common/h2_logo.png')
             .setFooter({ text: `경기 ID: ${gameId}` })
             .setTimestamp();
@@ -1661,12 +1521,11 @@ export class KboNotificationService {
       if (teamFans.length === 0) return;
       
       // 경기 정보
-      const homeTeamName = gameInfo.homeTeamName;
-      const awayTeamName = gameInfo.awayTeamName;
       const homeTeamScore = gameInfo.homeTeamScore || 0;
       const awayTeamScore = gameInfo.awayTeamScore || 0;
-      const myTeamName = isHomeTeam ? homeTeamName : awayTeamName;
-      const opponentTeamName = isHomeTeam ? awayTeamName : homeTeamName;
+      const opponentTeamCode = isHomeTeam ? gameInfo.awayTeamCode : gameInfo.homeTeamCode;
+      const myTeamDisplay = this.getTeamDisplayName(teamCode);
+      const opponentTeamDisplay = this.getTeamDisplayName(opponentTeamCode);
       
       // 승패 및 점수 정보
       const myTeamScore = isHomeTeam ? homeTeamScore : awayTeamScore;
@@ -1690,11 +1549,12 @@ export class KboNotificationService {
       }
       
       console.log(`${teamCode} 팀 ${teamFans.length}명의 팬들에게 경기 결과 알림을 보냅니다.`);
-      
+      const formattedDate = this.getTodayFormatted();
+
       // 각 팬에게 DM 보내기
       for (const fan of teamFans) {
         const userId = fan.user_id;
-        
+
         // 이미 알림을 보냈는지 한 번 더 확인 (개별 사용자 기준)
         const alreadySent = await MongoDB.NotificationHistory.hasNotificationBeenSent(
           userId,
@@ -1702,26 +1562,22 @@ export class KboNotificationService {
           teamCode,
           'result'
         );
-        
+
         if (alreadySent) {
           continue;
         }
-        
+
         try {
           const user = await this.client.users.fetch(userId);
-          
-            // 하이라이트 URL용 날짜 포맷팅
-          const today = new Date();
-          const formattedDate = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
 
           // 결과 알림 임베드 생성
           const embed = new EmbedBuilder()
             .setColor(embedColor)
-            .setTitle(`${resultEmoji} ${myTeamName} ${resultText} 알림`)
-            .setDescription(`${myTeamName} vs ${opponentTeamName} 경기가 종료되었습니다.`)
+            .setTitle(`${resultEmoji} ${myTeamDisplay} ${resultText} 알림`)
+            .setDescription(`${myTeamDisplay} vs ${opponentTeamDisplay} 경기가 종료되었습니다.`)
             .addFields({
               name: '경기 결과',
-              value: `${myTeamName} ${myTeamScore} : ${opponentScore} ${opponentTeamName}`,
+              value: `${myTeamDisplay} ${myTeamScore} : ${opponentScore} ${opponentTeamDisplay}`,
               inline: false
             })
             .setThumbnail('https://6ptotvmi5753.edge.naverncp.com/KBO_IMAGE/KBOHome/resources/images/common/h2_logo.png')
@@ -1764,32 +1620,10 @@ export class KboNotificationService {
   }
 
   /**
-   * 경기의 상세 결과를 가져옵니다 (선택적으로 활용 가능)
-   */
-  private async getGameDetails(gameId: string): Promise<any> {
-    try {
-      const url = `https://api-gw.sports.naver.com/schedule/games/${gameId}/relay`;
-      const response = await axios.get(url);
-      // 타입 단언을 사용하여 result 속성에 안전하게 접근
-      const data = response.data as { result?: any };
-      return data.result || null;
-    } catch (error) {
-      console.error(`경기 상세 결과 가져오기 실패: ${gameId}`, error);
-      return null;
-    }
-  }
-
-  /**
    * 사용자가 이미 실시간 중계를 구독 중인지 확인합니다
    */
   public isUserSubscribed(userId: string): boolean {
-    // 모든 구독에서 해당 사용자 ID 찾기
-    for (const [key, subscription] of this.liveRelaySubscriptions.entries()) {
-      if (subscription.userId === userId) {
-        return true;
-      }
-    }
-    return false;
+    return Array.from(this.liveRelaySubscriptions.values()).some(s => s.userId === userId);
   }
 
   /**
@@ -1799,21 +1633,53 @@ export class KboNotificationService {
    */
   unsubscribeUser(userId: string): boolean {
     let found = false;
-    
-    // 사용자의 모든 구독 찾기
     for (const [key, subscription] of this.liveRelaySubscriptions.entries()) {
       if (subscription.userId === userId) {
-        // 인터벌 정리
         clearInterval(subscription.intervalId);
-        
-        // 구독 정보 삭제
         this.liveRelaySubscriptions.delete(key);
-        
         found = true;
         console.log(`사용자 ${userId}의 실시간 중계 구독이 취소되었습니다.`);
       }
     }
-    
     return found;
+  }
+
+  // ── 공통 헬퍼 ──────────────────────────────────────────────────────────────
+
+  /** 오늘 날짜를 YYYY-MM-DD 형식으로 반환합니다 */
+  private getTodayFormatted(): string {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  }
+
+  /** 오늘 KBO 경기 목록을 가져옵니다 */
+  private async fetchTodaySchedule(): Promise<any[]> {
+    const date = this.getTodayFormatted();
+    const url = `https://api-gw.sports.naver.com/schedule/games?fields=basic%2Cschedule%2Cbaseball&upperCategoryId=kbaseball&fromDate=${date}&toDate=${date}&size=500`;
+    const response = await axios.get(url);
+    return (response.data as any)?.result?.games.filter((g: any) => g.categoryId === 'kbo') || [];
+  }
+
+  /** DM 전송 실패 시 알림을 비활성화하고 공지 채널에 안내합니다 */
+  private async handleDmFailure(userId: string): Promise<void> {
+    await MongoDB.kboUser.kbouser_notifications_toggle(userId, false);
+    console.log(`사용자 ${userId}의 알림 설정이 비활성화되었습니다.`);
+    try {
+      const channel = await this.client.channels.fetch('1279705542226481174');
+      if (channel?.isTextBased()) {
+        await (channel as TextChannel).send(`⚠️ 사용자 <@${userId}>에게 DM을 보낼 수 없습니다. 알림 설정이 비활성화되었습니다.`);
+      }
+    } catch (channelError) {
+      console.error('공지 채널 메시지 전송 실패:', channelError);
+    }
+  }
+
+  /** 중계 종료 버튼을 생성합니다 */
+  private createStopRelayButton(gameId: string): ButtonBuilder {
+    return new ButtonBuilder()
+      .setCustomId(`stop_relay_${gameId}`)
+      .setLabel('중계 종료')
+      .setStyle(ButtonStyle.Danger)
+      .setEmoji('⏹️');
   }
 }

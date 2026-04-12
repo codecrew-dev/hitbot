@@ -75,7 +75,7 @@ export function getActiveDmRelay() {
 }
 
 // 사용자가 이미 실시간 중계를 받고 있는지 확인하는 함수
-function isUserReceivingLiveRelay(userId: string): boolean {
+export function isUserReceivingLiveRelay(userId: string): boolean {
     // 1. DM 중계 확인 (현재 파일 내 activeDmRelay)
     if (activeDmRelay.has(userId)) {
         return true;
@@ -401,12 +401,12 @@ export default {
                         
                         for (const game of gamesOnDate) {
                             const homeTeam = {
-                                name: game.homeTeamName,
+                                name: getTeamDisplayName(game.homeTeamCode),
                                 score: game.homeTeamScore,
                                 code: game.homeTeamCode
                             };
                             const awayTeam = {
-                                name: game.awayTeamName,
+                                name: getTeamDisplayName(game.awayTeamCode),
                                 score: game.awayTeamScore,
                                 code: game.awayTeamCode
                             };
@@ -1218,9 +1218,9 @@ export default {
                     // 경기가 종료되었는지 확인 - 명확하게 체크
                     const isGameEnded = targetGame.statusCode === "RESULT" || targetGame.statusCode === "ENDED"; 
                     if (isGameEnded) {
-                        return interaction.editReply(`이 경기는 이미 종료되었습니다. 결과: ${targetGame.homeTeamName} ${targetGame.homeTeamScore} : ${targetGame.awayTeamScore} ${targetGame.awayTeamName}`);
+                        return interaction.editReply(`이 경기는 이미 종료되었습니다. 결과: ${getTeamDisplayName(targetGame.homeTeamCode)} ${targetGame.homeTeamScore} : ${targetGame.awayTeamScore} ${getTeamDisplayName(targetGame.awayTeamCode)}`);
                     }
-                    
+
                     if (targetGame.statusCode !== "STARTED" && !isGameEnded) {
                         return interaction.editReply(`이 경기는 아직 시작되지 않았습니다. 시작 예정 시간: ${targetGame.gameDateTime.substring(11, 16)}`);
                     }
@@ -1647,12 +1647,12 @@ async function getKBOLineup(gameId: string, returnHtml: boolean = false) {
 function displayGamesInEmbed(games: any[], embed: EmbedBuilder) {
     games.forEach((game: any) => {
         const homeTeam = {
-            name: game.homeTeamName,
+            name: getTeamDisplayName(game.homeTeamCode),
             score: game.homeTeamScore,
             emblemUrl: game.homeTeamEmblemUrl
         };
         const awayTeam = {
-            name: game.awayTeamName,
+            name: getTeamDisplayName(game.awayTeamCode),
             score: game.awayTeamScore,
             emblemUrl: game.awayTeamEmblemUrl
         };
@@ -1754,9 +1754,9 @@ async function showLiveGameInfo(interaction: ChatInputCommandInteraction, gameId
         return interaction.editReply('현재 경기 정보를 가져올 수 없습니다.');
     }
     
-    const homeTeamName = targetGame.homeTeamName;
-    const awayTeamName = targetGame.awayTeamName;
-    
+    const homeTeamName = getTeamDisplayName(targetGame.homeTeamCode);
+    const awayTeamName = getTeamDisplayName(targetGame.awayTeamCode);
+
     // 경기 정보 임베드 생성
     const liveEmbed = kboNotificationService.createLiveGameEmbed(liveData, homeTeamName, awayTeamName);
     
@@ -1771,7 +1771,7 @@ async function showLiveGameInfo(interaction: ChatInputCommandInteraction, gameId
     const dmRelayButton = new ButtonBuilder()
         .setCustomId(`dmrelay_${gameId}`)
         .setLabel('DM 중계 시작')
-        .setStyle(ButtonStyle.Primary)
+        .setStyle(ButtonStyle.Success)
         .setEmoji('📱');
     
     const row = new ActionRowBuilder<ButtonBuilder>().addComponents(refreshButton, dmRelayButton);
@@ -1847,7 +1847,7 @@ async function showLiveGameInfo(interaction: ChatInputCommandInteraction, gameId
 }
 
 // DM 실시간 중계를 시작하는 함수
-async function startDmLiveRelay(interaction: any, gameId: string) {
+export async function startDmLiveRelay(interaction: any, gameId: string) {
     try {
         // 경기 기본 정보 가져오기
         const today = new Date();
@@ -1872,16 +1872,16 @@ async function startDmLiveRelay(interaction: any, gameId: string) {
         // 경기가 종료되었는지 확인 - 명확하게 체크
         const isGameEnded = targetGame.statusCode === "RESULT" || targetGame.statusCode === "ENDED"; 
         if (isGameEnded) {
-            return interaction.editReply(`이 경기는 이미 종료되었습니다. 결과: ${targetGame.homeTeamName} ${targetGame.homeTeamScore} : ${targetGame.awayTeamScore} ${targetGame.awayTeamName}`);
+            return interaction.editReply(`이 경기는 이미 종료되었습니다. 결과: ${getTeamDisplayName(targetGame.homeTeamCode)} ${targetGame.homeTeamScore} : ${targetGame.awayTeamScore} ${getTeamDisplayName(targetGame.awayTeamCode)}`);
         }
-        
+
         if (targetGame.statusCode !== "STARTED" && !isGameEnded) {
             return interaction.editReply(`이 경기는 아직 시작되지 않았습니다. 시작 예정 시간: ${targetGame.gameDateTime.substring(11, 16)}`);
         }
-        
+
         // KBO 알림 서비스 인스턴스 가져오기
         const kboNotificationService = KboNotificationService.getInstance(interaction.client);
-        
+
         // 실시간 경기 정보 가져오기
         const liveData = await kboNotificationService.getGameLiveData(gameId);
         if (!liveData) {
@@ -1890,14 +1890,14 @@ async function startDmLiveRelay(interaction: any, gameId: string) {
             }
             return;
         }
-        
-        const homeTeamName = targetGame.homeTeamName;
-        const awayTeamName = targetGame.awayTeamName;
+
+        const homeTeamName = getTeamDisplayName(targetGame.homeTeamCode);
+        const awayTeamName = getTeamDisplayName(targetGame.awayTeamCode);
         
         // 중계 종료 버튼 생성
         const stopButton = new ButtonBuilder()
             .setCustomId(`stop_dmrelay_${interaction.user.id}`)
-            .setLabel('DM 중계 종료')
+            .setLabel('중계 종료')
             .setStyle(ButtonStyle.Danger)
             .setEmoji('⏹️');
         
@@ -2335,7 +2335,7 @@ KboNotificationService.getInstance = function(client: Client) {
                 
             const dmRelayButton = new ButtonBuilder()
                 .setCustomId(`dmrelay_${gameInfo.gameId}`)
-                .setLabel('DM 실시간 중계 시작')
+                .setLabel('DM 중계 시작')
                 .setStyle(ButtonStyle.Success)
                 .setEmoji('📱');
                 

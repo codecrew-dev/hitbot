@@ -40,8 +40,8 @@ async function loadSlashCommands(client: Client) {
       .put(Routes.applicationCommands(process.env.CLIENTID), {
         body: commands,
       })
-      .then((command: SlashCommandBuilder[]) => {
-        console.log(`${command.length}개의 슬래시 명령어를 푸쉬하였습니다.`);
+      .then((command) => {
+        console.log(`${(command as SlashCommandBuilder[]).length}개의 슬래시 명령어를 푸쉬하였습니다.`);
       })
       .catch((err) => {
         console.log(err);

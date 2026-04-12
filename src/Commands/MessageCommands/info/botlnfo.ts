@@ -26,9 +26,9 @@ export default {
         if (seconds) uptimeParts.push(`${seconds}초`);
 
         const embed = {
-            title: `${client.user.username} 봇 정보`,
+            title: `${client.user!.username} 봇 정보`,
             color: 0x00FFA3,
-            thumbnail: { url: client.user.displayAvatarURL() },
+            thumbnail: { url: client.user!.displayAvatarURL() },
             fields: [
             { 
                 name: "서버수",
